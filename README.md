@@ -1,6 +1,5 @@
 # cf-openstack-jumpstart
 
-
 cf-openstack-jumpstart is a set of expect scripts that will enable you to install Cloud Foundry from scratch on top of Openstack, optionally behind a corporate firewall.
 
 The scripts will:
