@@ -1,0 +1,114 @@
+#!/usr/bin/expect
+
+## Copyright (c) 2013 Farestam Consulting AB
+## Created by Stefan Farestam <stefan@farestam.com>
+
+## -------- source common functions and local configuration settings
+source {common_functions.exp}
+
+## --- download the latest bosh stemcell
+set cache          "/opt/cache/vcap_store"
+set rsdir          "http://bosh-jenkins-artifacts.s3.amazonaws.com"
+set stemcell_bosh  "bosh-stemcell/openstack/latest-bosh-stemcell-openstack.tgz"
+
+do "curl -R -z $cache/stemcells/stemcell_bosh.tgz \
+            -o $cache/stemcells/stemcell_bosh.tgz \
+                        $rsdir/$stemcell_bosh"
+
+## --- either insert proxy settings in the bosh stemcell or copy
+do "newer=\$(test $cache/stemcells/stemcell_bosh.tgz -nt \
+                  $cache/stemcells/stemcell_bosh-p.tgz && echo true)"
+set S_NEWER  "[ capture_var newer ]"
+
+if {$S_NEWER == "true" && $HTTP_PROXY != ""} {
+   ## some initial cleaning - in case of restarting a failed attempt
+   do {nova delete boshtmp >/dev/null 2>&1}
+   do {nova image-delete boshtmp-image >/dev/null 2>&1}
+   do {nova image-delete boshtmp-snapshot >/dev/null 2>&1}
+
+   ## create a dedicated tmp dir for unpacking
+   do {rm -rf /tmp/bsctmp; mkdir -p /tmp/bsctmp; cd /tmp/bsctmp}
+
+   ## unpack the stemcell
+   do "tar xvzf $cache/stemcells/stemcell_bosh.tgz"
+   do "tar xvzf image"
+
+   ## add the stemcell to openstack
+   do {glance add name=boshtmp-image disk_format=qcow2 container_format=bare  < root.img}
+
+   ## boot up the image
+   do "os_boot_instance boshtmp $PROJECT.core boshtmp-image $PROJECT"
+
+   ## figure out the ip
+   do {boshtmp_ip=$(os_get_vm_ip_by_name boshtmp)}
+
+   ## login and switch to the root user
+   do {ssh_notrace vcap@$boshtmp_ip} {vcap@}
+   do "export PS1='$cprompt'"
+   do {echo "c1oudc0w" | sudo -v -S; echo}
+   do {sudo su -} {root@}
+   do "export PS1='$cprompt'"
+
+   ## fix the proxy settings
+   fix_proxy_settings $HTTP_PROXY $HTTPS_PROXY
+
+   ## ensure that proxy settings are applied to the vcap user
+   do {sudo -iu vcap bash /etc/profile.d/proxy_inits.sh}
+
+   ## shut down the vm and wait until it is in the SHUTOFF state
+   do {halt} {closed by remote host}
+   do {while nova show boshtmp | grep status | grep -v SHUTOFF; do sleep 1; done}
+
+   ## create a snapshot from the vm and wait until snapshot is available
+   do {nova image-create boshtmp boshtmp-snapshot}
+   do {while nova image-show boshtmp-snapshot|grep status|grep -v ACTIVE;do sleep 1;done}
+
+   ## download snapshot as image
+   do {glance image-download --file root.img boshtmp-snapshot}
+
+   ## pack up the image and create a new stemcell bundle
+   do {tar cvzf image root.img}
+   do "tar cvzf $cache/stemcells/stemcell_bosh-p.tgz \
+                image stemcell_dpkg_l.txt stemcell.MF"
+
+   ## clean up
+   do {nova image-delete boshtmp-snapshot}
+   do {nova image-delete boshtmp-image}
+   do {nova delete boshtmp}
+   do {cd /tmp; rm -rf /tmp/bsctmp}
+} elseif {$S_NEWER == "true"} {
+   do "cp $cache/stemcells/stemcell_bosh.tgz $cache/stemcells/stemcell_bosh-p.tgz"
+}
+
+## give the new file the same timestamp as the original
+do "touch -r $cache/stemcells/stemcell_bosh.tgz $cache/stemcells/stemcell_bosh-p.tgz"
+
+## --- find out the ip of the bootstrap vm
+do "bootstrap_ip=\$(os_get_vm_ip_by_name $PROJECT.bootstrap)"
+
+## --- sync stemcells cache to bootstrap
+do "rsync -av \
+   -e \"ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no\" \
+   $cache/stemcells/ ubuntu@\${bootstrap_ip}:/var/vcap/store/stemcells/"
+
+## --- login to the bootstrap vm
+do {ssh_notrace ubuntu@$bootstrap_ip} {ubuntu@}
+
+## --- switch to the root user
+do {sudo su -} {root@}
+do "export PS1='$cprompt'"
+
+## --- upload the stemcell
+do {bosh -n --color upload stemcell /var/vcap/store/stemcells/stemcell_bosh-p.tgz}
+
+## --- exit back to openstack
+do {exit} {ubuntu@}
+do {exit}
+
+send "exit\r"
+puts "\r"
+exit 0
+
+## ==========================================================================
+
+

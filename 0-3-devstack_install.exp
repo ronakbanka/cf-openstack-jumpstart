@@ -1,0 +1,133 @@
+#!/usr/bin/expect
+
+## Copyright (c) 2013 Farestam Consulting AB
+## Created by Stefan Farestam <stefan@farestam.com>
+
+## -------- source common functions and local configuration settings
+set noStack true
+source {common_functions.exp}
+
+
+## --- remove all traces of any existing devstack installation
+## ---    Note: if this is not done properly the installation might fail or become
+## ---    unstable (this is especiall true for mysql)
+
+do {grep -q ^stack: /etc/passwd && sudo -u stack -i devstack/unstack.sh}
+do {apache2ctl stop}
+do {killall -9 -u stack}
+do {killall -9 -u rabbitmq}
+do {killall -9 iscsid libvirtd tgtd kvm screen}
+do {deluser --remove-home stack}
+
+do {rm -rf /opt/stack /var/log/devstack /etc/keystone /etc/glance /etc/cinder /etc/nova}
+do {apt-get remove --purge -y mysql-server mysql-common rabbitmq-server screen}
+do {rm -rf /etc/mysql /var/lib/mysql/}
+
+## --- reset iscsi
+do {/etc/init.d/open-iscsi stop}
+do {rm -rf /etc/iscsi/nodes/iqn.*}
+
+## find any loopback devices used by stack
+do {ldevs=$(losetup -a | fgrep '/opt/stack' | awk -F: '{print $1}')}
+do {for ldev in $ldevs; do pvremove -ffy $ldev; losetup -d $ldev; done}
+
+## delete any error devices from the kernel
+do {edevs=$(pvs 2>&1 | awk -F: '/\/[a-z]*:.*read failed/{print $1}')}
+do {for edev in $edevs; do echo 1 > /sys/block/${edev##*/}/device/delete; done}
+
+do {/etc/init.d/open-iscsi start}
+
+## --- install screen
+do {apt-get install screen -y --force-yes}
+
+## --- Make sure that iptables are cleaned
+do {iptables --policy INPUT   ACCEPT}
+do {iptables --policy OUTPUT  ACCEPT}
+do {iptables --policy FORWARD ACCEPT}
+do {iptables -Z}
+do {iptables -F}
+do {iptables -X}
+do {killall dnsmasq}
+
+## -- force git to use https for firewall tunneling
+do {git config --replace-all --global url.https://github.com/.insteadOf git://github.com/}
+do {git config --add         --global url.https://github.com/.insteadOf git@github.com:}
+
+do {cd /tmp; rm -rf devstack}
+do {git clone git://github.com/openstack-dev/devstack.git --branch stable/grizzly}
+do {cd /tmp/devstack}
+
+## --- use route to Google's DNS to capture host ip
+## ---    Note: otherwise 127.0.0.1 might be used which can cause problems
+do {host_ip=$(ip route get 8.8.8.8 | sed -n '/ src / s/.*src *\([0-9.]*\).*$/\1/p')}
+
+## --- try to be smart and figure out the flat interface (network card with product name)
+do {flat_interface=$(lshw -class network | \
+   sed '/^.*network:.*DISABLED/,/^ *configuration:/d' | \
+   sed -n '/product:/,/description:/ s/.*logical name: *//p')}
+
+set FIXED_NETWORK_SIZE  256
+set GENERAL_PASSWORD    admin
+
+do "cat << ---END > localrc
+CINDER_SECURE_DELETE=False
+API_RATE_LIMIT=False
+FLOATING_RANGE=[lindex [range $IPS_FLOATING] 0]
+FIXED_RANGE=$FIXED_RANGE
+FIXED_NETWORK_SIZE=$FIXED_NETWORK_SIZE
+FLAT_INTERFACE=\$flat_interface
+HOST_IP=\$host_ip
+ADMIN_PASSWORD=$GENERAL_PASSWORD
+MYSQL_PASSWORD=$GENERAL_PASSWORD
+RABBIT_PASSWORD=$GENERAL_PASSWORD
+SERVICE_PASSWORD=$GENERAL_PASSWORD
+SERVICE_TOKEN=$GENERAL_PASSWORD
+VOLUME_BACKING_FILE=/openstack-data/volumes-backing-file
+VOLUME_BACKING_FILE_SIZE=120000M
+LOGDAYS=20
+LOGFILE=/var/log/devstack/stack.sh.log
+VERBOSE=False
+LOG_COLOR=False
+SCREEN_LOGDIR=/var/log/devstack
+---END"
+
+do {mkdir -p /var/log/devstack; chmod 0777 /var/log/devstack}
+
+if {$HTTP_PROXY != ""} {
+do "cat << ---END >> localrc
+http_proxy=$HTTP_PROXY
+https_proxy=$HTTP_PROXY
+no_proxy=localhost,127.0.0.1,\$host_ip
+---END"
+}
+
+## we put the backing file for the volumes in a separate, top-level
+## directory so that it becomes convenient to use a special disk for it
+## if you want to put it elsewhere, then just link to this location and
+## the mkdir will fail silently
+do {mkdir -p    /openstack-data}
+do {chmod 0777  /openstack-data}
+
+## --- run the devstack install script
+send "./stack.sh\n"
+expect {This is your host ip}
+expect {stack@}
+
+## --- fix the prompt
+do "export PS1='$cprompt'"
+
+## --- fix a config bug in tgt
+do {sudo bash -c 'echo "include /etc/tgt/conf.d/stack.conf" > /etc/tgt/targets.conf'}
+do {sudo service tgt restart}
+
+## --- ensure that open-iscsi daemon is running for volume management
+do {/etc/init.d/open-iscsi status  >/dev/null 2>&1 || \
+    sudo /etc/init.d/open-iscsi restart}
+
+send "exit\r"
+send "exit\r"
+
+exit 0
+
+
+

@@ -1,0 +1,563 @@
+---
+name: %DEPLOYMENT_NAME%
+director_uuid: %DIRECTOR_UUID%
+
+## Originally based on sample openstack manifest from Ramon Makkelie:
+##   https://groups.google.com/a/cloudfoundry.org/d/msg/bosh-users/3sYYKmP6Fnk/5njB5qJ9uZwJ
+## then further refined with input from bosh-cloudfoundry:
+##   https://groups.google.com/a/cloudfoundry.org/d/msg/vcap-dev/hnDsp2OaLvs/W4C4C7cBcG8J
+
+
+## ---------------------------------------------------------------------
+
+releases:
+  - name: cf-release
+    version: latest
+  - name: cf-services
+    version: latest
+  - name: cf-services-contrib
+    version: latest
+
+
+## ---------------------------------------------------------------------
+
+networks:
+  - name: default
+    type: dynamic
+    cloud_properties:
+      security_groups:
+        - cloudfoundry-%CF_SYSTEM%
+
+  - name: floating
+    type: vip
+    cloud_properties:
+      security_groups:
+      - cloudfoundry-%CF_SYSTEM%
+      - default
+
+## ---------------------------------------------------------------------
+
+update:
+  canaries: 1
+#  canary_watch_time: 30000-600000
+  canary_watch_time: 30000-300000
+  update_watch_time: 30000-600000
+  max_in_flight: 4
+  max_errors: 1
+
+## ---------------------------------------------------------------------
+
+compilation:
+  workers: %CF_WORKERS%
+  network: default
+  reuse_compilation_vms: %CF_WORKER_REUSE%
+  cloud_properties:
+    instance_type: %FLAVOR_COMPILE%
+
+## ---------------------------------------------------------------------
+
+resource_pools:
+  - name: small
+    network: default
+    size: 2
+    stemcell:
+      name: bosh-stemcell
+      version: latest
+    cloud_properties:
+      instance_type: %FLAVOR_CORE%
+
+  - name: medium
+    network: default
+    size: 4
+    stemcell:
+      name: bosh-stemcell
+      version: latest
+    cloud_properties:
+      instance_type: %FLAVOR_CORE%
+
+## ---------------------------------------------------------------------
+
+jobs:
+  - name: core
+    release: cf-release
+    template:
+      - syslog_aggregator
+      - nats
+      - health_manager_next
+      - collector
+      - login
+    instances: 1
+    resource_pool: medium
+    persistent_disk: 8192
+    networks:
+      - name: default
+        default: [dns, gateway]
+    properties:
+      db: databases
+
+  ## these were originally colocated in "core", but it generated errors
+  - name: core2
+    release: cf-release
+    template:
+      - postgres
+      - debian_nfs_server
+    instances: 1
+    resource_pool: medium
+    persistent_disk: 8192
+    networks:
+      - name: default
+        default: [dns, gateway]
+    properties:
+      db: databases
+
+  ## Note that uaa cannot be colocated with login (or any other jobs)
+  - name: uaa
+    release: cf-release
+    template:
+      - uaa
+    instances: 1
+    resource_pool: small
+    networks:
+      - name: default
+        default: [dns, gateway]
+
+  - name: api
+    release: cf-release
+    template:
+      - cloud_controller_ng
+      - gorouter
+    instances: 1
+    resource_pool: medium
+    networks:
+      - name: default
+        default: [dns, gateway]
+      - name: floating
+        static_ips:
+          - %CF_CORE_IP%
+    properties:
+      db: databases
+
+  - name: dea
+    release: cf-release
+    template:
+      - dea_next
+    instances: 1
+    resource_pool: small
+    networks:
+      - name: default
+        default: [dns, gateway]
+
+  - name: services
+    release: cf-services
+    template:
+      - mysql_gateway
+      - mysql_node
+      - postgresql_gateway
+      - postgresql_node
+    instances: 1
+    resource_pool: medium
+    persistent_disk: 16384
+    networks:
+      - name: default
+        default: [dns, gateway]
+    properties:
+      db: databases
+      mysql_node:
+        plan: "100"
+      postgresql_node:
+        plan: "100"
+      uaa_client_id: cf
+      uaa_endpoint: http://uaa.%CF_ROOT_DNS%
+      uaa_client_auth_credentials:
+        username: admin
+        password: c1oudc0w
+      service_auth_tokens:
+        mysql_core: uiasdfkasdfophasdfkjadsf
+#      service_auth_tokens:
+#        postgresql_core: asdfg0uadsfophiasdfhophoads
+#      service_auth_tokens:
+#        postgresql_core: "2fdb2546b7a94b10"
+
+
+## ---------------------------------------------------------------------
+
+properties:
+  domain: %CF_ROOT_DNS%
+  system_domain: %CF_ROOT_DNS%
+  system_domain_organization: "%CF_ROOT_DNS%"
+  app_domains:
+    - %CF_ROOT_DNS%
+
+  networks:
+    apps: default
+    management: default
+
+  nats:
+    address: 0.core.default.%DEPLOYMENT_NAME%.microbosh
+    port: 4222
+    user: nats
+    password: "c1oudc0w"
+    authorization_timeout: 5
+
+  router:
+    port: 8081
+    status:
+      port: 8080
+      user: gorouter
+      password: "c1oudc0w"
+
+  dea: &dea
+    max_memory: 4096
+    memory_mb:  4084
+    memory_overcommit_factor: 4
+    disk_mb: 4096
+    disk_overcommit_factor: 4
+  dea_next: *dea
+
+  service_lifecycle:
+    serialization_data_server:
+    - 0.core.default.%DEPLOYMENT_NAME%.microbosh
+
+  syslog_aggregator:
+    address: 0.core.default.%DEPLOYMENT_NAME%.microbosh
+    port: 54321
+
+  serialization_data_server:
+    port: 8080
+    logging_level: debug
+    upload_token: 8f7COGvThwlmulIzAgOHxMXurBrG364k
+    upload_timeout: 10
+
+  collector:
+    deployment_name: %DEPLOYMENT_NAME%
+    use_tsdb: false
+    use_aws_cloudwatch: false
+    use_datadog: false
+
+  nfs_server:
+    address: 0.core2.default.%DEPLOYMENT_NAME%.microbosh
+
+  debian_nfs_server:
+    no_root_squash: true
+
+
+  databases: &databases
+    db_scheme: postgres
+    address: 0.core2.default.%DEPLOYMENT_NAME%.microbosh
+    port: 5524
+    roles:
+      - tag: admin
+        name: ccadmin
+        password: "c1oudc0w"
+      - tag: admin
+        name: uaaadmin
+        password: "c1oudc0w"
+    databases:
+      - tag: cc
+        name: ccdb
+        citext: true
+      - tag: uaa
+        name: uaadb
+        citext: true
+
+  ccdb: &ccdb
+    db_scheme: postgres
+    address: 0.core2.default.%DEPLOYMENT_NAME%.microbosh
+    port: 5524
+    roles:
+      - tag: admin
+        name: ccadmin
+        password: "c1oudc0w"
+    databases:
+      - tag: cc
+        name: ccdb
+        citext: true
+  ccdb_ng: *ccdb
+
+  uaadb:
+    db_scheme: postgresql
+    address: 0.core2.default.%DEPLOYMENT_NAME%.microbosh
+    port: 5524
+    roles:
+      - tag: admin
+        name: uaaadmin
+        password: "c1oudc0w"
+    databases:
+      - tag: uaa
+        name: uaadb
+        citect: true
+
+  cc_api_version: v2
+
+  cc: &cc
+    logging_level: debug
+    external_host: ccng
+    srv_api_uri: http://api.%CF_ROOT_DNS%
+    cc_partition: default
+    db_encryption_key: "b963127302433579"
+    bootstrap_admin_email: "admin@%CF_ROOT_DNS%"
+    bulk_api_password: "c1oudc0w"
+    uaa_resource_id: cloud_controller
+    staging_upload_user: uploaduser
+    staging_upload_password: c1oudc0w
+    resource_pool:
+      resource_directory_key: %CF_ROOT_DNS%-cc-resources
+      fog_connection:
+        provider: Local
+        local_root: /var/vcap/shared
+    packages:
+      app_package_directory_key: %CF_ROOT_DNS%-cc-packages
+    droplets:
+      droplet_directory_key: %CF_ROOT_DNS%-cc-droplets
+  ccng: *cc
+
+  login:
+    protocol: http
+    links:
+      home:   http://console.%CF_ROOT_DNS%
+      passwd: http://console.%CF_ROOT_DNS%/password_resets/new
+      signup: http://console.%CF_ROOT_DNS%/register
+
+  uaa:
+    url: http://uaa.%CF_ROOT_DNS%
+    spring_profiles: postgresql
+    no_ssl: true
+    catalina_opts: -Xmx768m -XX:MaxPermSize=256m
+    resource_id: account_manager
+    jwt:
+      signing_key: |
+        -----BEGIN RSA PRIVATE KEY-----
+        MIICXAIBAAKBgQDHFr+KICms+tuT1OXJwhCUmR2dKVy7psa8xzElSyzqx7oJyfJ1
+        JZyOzToj9T5SfTIq396agbHJWVfYphNahvZ/7uMXqHxf+ZH9BL1gk9Y6kCnbM5R6
+        0gfwjyW1/dQPjOzn9N394zd2FJoFHwdq9Qs0wBugspULZVNRxq7veq/fzwIDAQAB
+        AoGBAJ8dRTQFhIllbHx4GLbpTQsWXJ6w4hZvskJKCLM/o8R4n+0W45pQ1xEiYKdA
+        Z/DRcnjltylRImBD8XuLL8iYOQSZXNMb1h3g5/UGbUXLmCgQLOUUlnYt34QOQm+0
+        KvUqfMSFBbKMsYBAoQmNdTHBaz3dZa8ON9hh/f5TT8u0OWNRAkEA5opzsIXv+52J
+        duc1VGyX3SwlxiE2dStW8wZqGiuLH142n6MKnkLU4ctNLiclw6BZePXFZYIK+AkE
+        xQ+k16je5QJBAN0TIKMPWIbbHVr5rkdUqOyezlFFWYOwnMmw/BKa1d3zp54VP/P8
+        +5aQ2d4sMoKEOfdWH7UqMe3FszfYFvSu5KMCQFMYeFaaEEP7Jn8rGzfQ5HQd44ek
+        lQJqmq6CE2BXbY/i34FuvPcKU70HEEygY6Y9d8J3o6zQ0K9SYNu+pcXt4lkCQA3h
+        jJQQe5uEGJTExqed7jllQ0khFJzLMx0K6tj0NeeIzAaGCQz13oo2sCdeGRHO4aDh
+        HH6Qlq/6UOV5wP8+GAcCQFgRCcB+hrje8hfEEefHcFpyKH+5g1Eu1k0mLrxK2zd+
+        4SlotYRHgPCEubokb2S1zfZDWIXW3HmggnGgM949TlY=
+        -----END RSA PRIVATE KEY-----
+      verification_key: |
+        -----BEGIN PUBLIC KEY-----
+        MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDHFr+KICms+tuT1OXJwhCUmR2d
+        KVy7psa8xzElSyzqx7oJyfJ1JZyOzToj9T5SfTIq396agbHJWVfYphNahvZ/7uMX
+        qHxf+ZH9BL1gk9Y6kCnbM5R60gfwjyW1/dQPjOzn9N394zd2FJoFHwdq9Qs0wBug
+        spULZVNRxq7veq/fzwIDAQAB
+        -----END PUBLIC KEY-----
+    cc:
+      client_secret: "c1oudc0w"
+    admin:
+      client_secret: "c1oudc0w"
+    batch:
+      username: batchuser
+      password: c1oudc0w
+    client:
+      autoapprove:
+        - cf
+        - vmc
+        - my
+        - micro
+        - support-signon
+        - login
+    clients:
+      login:
+        override: true
+        scope: openid
+        authorities: oauth.login
+        secret: c1oudc0w
+        authorized-grant-types: authorization_code,client_credentials,refresh_token
+        redirect-uri: http://login.%CF_ROOT_DNS%
+      support-services:
+        scope: scim.write,scim.read,openid,cloud_controller.read,cloud_controller.write
+        secret: ssosecretsso
+        authorized-grant-types: authorization_code,client_credentials
+        redirect-uri: http://support-signon.%CF_ROOT_DNS%
+        authorities: portal.users.read
+        access-token-validity: 1209600
+        refresh-token-validity: 1209600
+      vmc:
+        override: true
+        authorized-grant-types: password,implicit
+        authorities: uaa.none
+        scope: cloud_controller.read,cloud_controller.write,openid,password.write,cloud_controller.admin,scim.read,scim.write
+      cf:
+        override: true
+        authorized-grant-types: password,implicit,refresh_token
+        authorities: uaa.none
+        scope: cloud_controller.read,cloud_controller.write,openid,password.write,cloud_controller.admin,scim.read,scim.write
+      servicesmgmt:
+        override: true
+        secret: serivcesmgmtsecret
+        scope: openid,cloud_controller.read,cloud_controller.write
+        authorities: uaa.resource,oauth.service,clients.read,clients.write,clients.secret
+        authorized-grant-types: authorization_code,client_credentials,password,implicit
+        redirect-uri: http://servicesmgmt.%CF_ROOT_DNS%/auth/cloudfoundry/callback
+        autoapprove: true
+    scim:
+      users:
+      - admin|c1oudc0w|scim.write,scim.read,openid,cloud_controller.admin
+      - services|c1oudc0w|scim.write,scim.read,openid,cloud_controller.admin
+
+## ---------------------------------------------------------------------
+## extra configuration for services
+
+  service_plans:
+    mysql:
+      "100":
+        description: "Shared server, shared VM, 1MB memory, 10MB storage, 10 connections"
+        free: true
+        job_management:
+          high_water: 900
+          low_water: 100
+        configuration:
+          capacity: 500
+          max_db_size: 10
+          key_buffer: 512
+          innodb_buffer_pool_size: 512
+          max_allowed_packet: 16
+          thread_cache_size: 128
+          query_cache_size: 128
+          max_long_query: 3
+          max_long_tx: 30
+          max_clients: 10
+          max_connections: 1000
+          table_open_cache: 2000
+          innodb_tables_per_database: 50
+          connection_pool_size:
+            min: 5
+            max: 10
+          backup:
+            enable: true
+          lifecycle:
+# if lifecycle is enabled, then the services VM fails to start
+#            enable: true
+            enable: false
+            serialization: enable
+            snapshot:
+              quota: 1
+          warden:
+            enable: false
+    postgresql:
+      "100":
+        description: "Shared server, shared VM, 1MB memory, 10MB storage, 10 connections"
+        free: true
+        job_management:
+          high_water: 900
+          low_water: 100
+        configuration:
+          capacity: 500
+          max_db_size: 10
+          max_long_query: 3
+          max_long_tx: 10
+          max_clients: 10
+          max_connections: 1000
+          shared_buffers: 320
+          effective_cache_size: 1142
+          shmmax: 397410304
+          checkpoint_segments: 16
+          checkpoint_segments_max: 50
+          maintenance_work_mem: 30
+          backup:
+            enable: true
+          lifecycle:
+# if lifecycle is enabled, then the services VM fails to start
+#            enable: true
+            enable: false
+            serialization: enable
+            snapshot:
+              quota: 1
+          warden:
+            enable: false
+    mongodb:
+      "100":
+        description: "Dedicated server, shared VM, 250MB storage, 10 connections"
+        free: true
+        job_management:
+          high_water: 230
+          low_water: 20
+        configuration:
+          capacity: 125
+          max_clients: 10
+          quota_files: 4
+          quota_data_size: 240
+          enable_journaling: true
+          backup:
+            enable: true
+          lifecycle:
+            enable: true
+            serialization: enable
+            snapshot:
+              quota: 1
+    redis:
+      "100":
+        description: "Dedicated server, shared VM, 20MB memory, 50 connections"
+        free: true
+        job_management:
+          high_water: 410
+          low_water: 40
+        configuration:
+          capacity: 220
+          max_memory: 20
+          memory_overhead: 20
+          max_clients: 50
+          persistent: true
+          backup:
+            enable: true
+          lifecycle:
+            enable: true
+            serialization: enable
+            snapshot:
+              quota: 1
+    rabbit:
+      "100":
+        description: "Dedicated server, shared VM, 1MB messages/day, 10 connections"
+        free: true
+        job_management:
+          high_water: 280
+          low_water: 20
+        configuration:
+          capacity: 150
+          max_disk: 10
+          max_clients: 10
+          vm_memory_high_watermark: 0.00587
+          free_disk_low_water: 0.01832
+          bandwidth_quotas:
+            per_day: 1
+            per_second: 0.01
+          filesystem_quota: true
+
+  mysql_gateway:
+    token: uiasdfkasdfophasdfkjadsf
+    default_plan: "100"
+    supported_versions: ["5.5"]
+    version_aliases:
+      current: "5.5"
+    cc_api_version: v2
+
+  mysql_node:
+    password: adfsadfsadsv
+    supported_versions: ["5.5"]
+    default_version: "5.5"
+    max_tmp: 1024
+
+
+  postgresql_gateway:
+    token: asdfg0uadsfophiasdfhophoads
+    supported_plan: "100"
+    supported_versions: ["9.1"]
+    version_aliases:
+      current: "9.1"
+    cc_api_version: v2
+    acls:
+      wildcards: ["*@*"]
+
+  postgresql_node:
+    supported_versions: ["9.1"]
+    default_version: "9.1"
+    password: puafsp0uadfsophdsafjoidfs
+
+

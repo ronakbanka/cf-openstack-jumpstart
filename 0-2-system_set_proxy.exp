@@ -1,0 +1,13 @@
+#!/usr/bin/expect
+
+## Copyright (c) 2013 Farestam Consulting AB
+## Created by Stefan Farestam <stefan@farestam.com>
+
+## -------- source common functions and local configuration settings
+set noStack true
+source {common_functions.exp}
+
+fix_proxy_settings $HTTP_PROXY $HTTPS_PROXY
+
+send "exit\r"
+puts "\r"

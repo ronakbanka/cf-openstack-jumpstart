@@ -1,0 +1,143 @@
+#!/usr/bin/expect
+
+## Copyright (c) 2013 Farestam Consulting AB
+## Created by Stefan Farestam <stefan@farestam.com>
+
+## -------- source common functions and local configuration settings
+source {common_functions.exp}
+
+## --- cleanup old microbosh instances (if any)
+do "os_delete_instances_by_flavor $PROJECT.microbosh"
+
+set OS_USERNAME     "[capture_var OS_USERNAME    ]"
+set OS_PASSWORD     "[capture_var OS_PASSWORD    ]"
+set OS_TENANT_NAME  "[capture_var OS_TENANT_NAME ]"
+set OS_AUTH_URL     "[capture_var OS_AUTH_URL    ]/tokens"
+
+## --- delete keypairs and security groups to start fresh
+do "(nova  keypair-delete $PROJECT-bosh       2>/dev/null)"
+
+## --- remove unallocated floating ips so that we don't run out of them...
+do {for ip in $(nova floating-ip-list | awk '$4=="None" {print $2}'); do
+    nova floating-ip-delete $ip; done}
+
+## --- remove the core ip from the ip-pool
+do "nova floating-ip-bulk-delete $CF_CORE_IP"
+
+## --- find out the ip of the bootstrap vm
+do "bootstrap_ip=\$(os_get_vm_ip_by_name $PROJECT.bootstrap)"
+
+## --- add no_proxy for openstack server to proxy settings
+if {"$PROXY_PRE" != ""} {
+   do {openstack_ip=$(ip route get 8.8.8.8 | \
+       sed -n '/ src / s/.*src *\([0-9.]*\).*$/\1/p')}
+   set IP_OPENSTACK    "[capture_var openstack_ip ]"
+   set PROXY_PRE "$PROXY_PRE no_proxy=$IP_OPENSTACK,127.0.0.1"
+}
+
+## --- ensure that local cache exists
+set cache "/opt/cache/vcap_store"
+do "sudo mkdir -p   $cache/stemcells"
+do "sudo chown -R \$(id -u).\$(id -g) $cache"
+
+## --- download the latest microbosh stemcells
+set rsdir               "http://bosh-jenkins-artifacts.s3.amazonaws.com"
+set stemcell_microbosh  "micro-bosh-stemcell/openstack/latest-micro-bosh-stemcell-openstack.tgz"
+
+do "curl -R -z $cache/stemcells/stemcell_microbosh.tgz \
+            -o $cache/stemcells/stemcell_microbosh.tgz \
+                        $rsdir/$stemcell_microbosh"
+
+
+## --- ensure that /var/vcap/store exists on bootstrap
+do {ssh_notrace ubuntu@$bootstrap_ip \
+   "sudo mkdir -p /var/vcap/store/; sudo chown -R ubuntu /var/vcap"}
+
+## --- sync cache to bootstrap
+do "rsync -av \
+   -e \"ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no\" \
+   $cache/ ubuntu@\${bootstrap_ip}:/var/vcap/store/"
+
+## --- login to the bootstrap vm
+do {ssh_notrace ubuntu@$bootstrap_ip} {ubuntu@}
+
+## --- switch to the root user
+do {sudo su -} {root@}
+do "export PS1='$cprompt'"
+
+set BOSH_DEPLOYMENT "$PROJECT-bosh"
+
+do {rm -rf .bosh_deployer_config .bosh_cache}
+do "rm -rf .microbosh && mkdir -p .microbosh/deployments/$BOSH_DEPLOYMENT"
+do "\[ -r /var/vcap/store/stemcells/stemcell_microbosh.tgz \] &&
+       ln /var/vcap/store/stemcells/stemcell_microbosh.tgz \
+       .microbosh/deployments/$BOSH_DEPLOYMENT/last_successful_micro-bosh-stemcell-openstack.tgz"
+
+## --- fix the flavor used for microbosh (verified to work with 0.11.5)
+do {gemsdir=$(which bosh-bootstrap| sed 's|/bosh-bootstrap|/../gems|')}
+do {bbsdir=$(echo $gemsdir/bosh-bootstrap*)}
+do "sed -i -e 's|m1.microbosh|$PROJECT.microbosh|' \
+           -e 's|m1.medium|$PROJECT.microbosh|'\
+    \$bbsdir/lib/bosh-bootstrap/microbosh_providers/openstack.rb"
+do "sed -i 's|exec bosh|exec env -u http_proxy -u https_proxy -u HTTP_PROXY bosh|' \
+    \$bbsdir/lib/bosh-bootstrap/microbosh.rb"
+
+## --- initialize bosh bootstrap settings (verified to work with 0.11.5)
+do "cat << ---END > \$HOME/.microbosh/settings.yml
+---
+bosh:
+  name: $BOSH_DEPLOYMENT
+provider:
+  name: openstack
+  credentials:
+    openstack_username: $OS_USERNAME
+    openstack_api_key: $OS_PASSWORD
+    openstack_tenant: $OS_TENANT_NAME
+    openstack_auth_url: $OS_AUTH_URL
+    openstack_region: ''
+resources:
+  persistent_disk: 16384
+  cloud_properties:
+    instance_type: $PROJECT.microbosh
+---END"
+
+
+do "$PROXY_PRE bosh-bootstrap deploy"
+
+## --- clean up bosh versions after bosh-bootstrap
+do {gem list bosh | awk '{print $1}' | xargs -L 1 gem clean}
+
+## --- create bosh config files
+do {target=$(awk '/^target:/ {print $2}' .bosh_deployer_config)}
+do {cat << ---END > .bosh_config
+---
+target: $target
+auth:
+  $target:
+    username: admin
+    password: admin
+---END}
+do {bosh status}
+
+## --- set up the configuration file
+do {cat << ---END > .bosh_common_config
+---
+bosh_git_repo: git://github.com/cloudfoundry/bosh.git
+base_systems_dir: /var/vcap/store/systems
+releases_dir: /var/vcap/store/releases
+stemcells_dir: /var/vcap/store/stemcells
+---END}
+
+do {mkdir -p /var/vcap/store/{systems,releases,stemcells}}
+
+## --- exit back to openstack
+do {exit} {ubuntu@}
+do {exit}
+
+send "exit\r"
+puts "\r"
+exit 0
+
+## ==========================================================================
+
+

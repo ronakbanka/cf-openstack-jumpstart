@@ -1,0 +1,319 @@
+#!/usr/bin/expect
+
+## Copyright (c) 2013 Farestam Consulting AB
+## Created by Stefan Farestam <stefan@farestam.com>
+
+## --- general settings for the expect scripts
+match_max    50000   ;## increase size of the matching buffer
+set timeout  60000   ;## increase timeout while waiting for a command
+set cprompt  "===> " ;## improve matching stability with custom prompt
+set prompt   ".*\[\r\n\]$cprompt"   ;## prompt matching regex
+
+set ctrlC "\003"
+set ctrlD "\004"
+set ctrlZ "\x1A"
+set ESC   "\033"
+
+## -----------------------------------------------------------------------------
+
+proc get_set_target {argv} {
+   set target ""
+   if {[info exists ::env(INSTALL_TARGET)]} {
+      set target $::env(INSTALL_TARGET)
+   } else {
+      if {[llength $argv] > 0} {
+         set target  [lindex $argv 0]
+      } elseif [ file exists "target" ] {
+         gets [open "target" r] target
+      }
+      puts [open "target" "w"] $target
+   }
+   if {$target == ""} {
+      puts "no target defined:"
+      puts "   - either give target as first argument"
+      puts "   - or store it in the file \"target\""
+      exit 1
+   }
+   return $target
+}
+
+## -----------------------------------------------------------------------------
+## --- create a range operator for ip ranges
+## 1.1.1.1-3          ->  1.1.1.1 1.1.1.2 1.1.1.3
+## 1.1.1.1-3 1.1.1.5  ->  1.1.1.1 1.1.1.2 1.1.1.3 1.1.1.5
+
+proc range {args} {
+    set vals {}
+    foreach {section} $args {
+        foreach {arg} [split $section " "] {
+           set tt [split $arg "-"]
+           switch [llength $tt] {
+               1 {lappend vals $arg}
+               2 {
+                  set parts_start [split [lindex $tt 0] "."]
+                  set parts_end   [split [lindex $tt 1] "."]
+                  set ipfirst  [lindex $parts_start end]
+                  set iplast   [lindex $parts_end   end]
+                  for {set i $ipfirst} {$i <= $iplast} {incr i} {
+                     lappend vals [join [lset parts_start end $i] "."]
+                  }
+              }
+           }
+        }
+    }
+    return $vals
+}
+
+## -----------------------------------------------------------------------------
+## --- create a convenience wrapper around send/expect
+
+proc do {command args} {
+    global prompt
+    if {[llength $args] > 0} {
+        set eprompt [lindex $args 0]
+    } else {
+        set eprompt "$prompt"
+    }
+
+    send "$command\r"
+    expect -re "$eprompt"
+}
+
+## -----------------------------------------------------------------------------
+## --- capture environment variable from a bash script to expect
+
+proc capture_var {vname} {
+   global prompt
+   #exp_internal 1
+   log_user 0
+   expect * ;# Eat any pending output (just to be sure)
+   send "echo \"'::'\${${vname}}'\"\r"
+   expect -re "\[^\r\]*\r"  ;# this will eat the output line
+   expect "*'::'"
+   expect -re "\[^'\]*"
+   set retval $expect_out(buffer)
+   expect -re $prompt
+   log_user 1
+   #exp_internal 0
+   return $retval
+}
+
+## -----------------------------------------------------------------------------
+
+proc ensure_installed {binary package} {
+   do "which $binary  ||  apt-get install $package -y --force-yes || \
+       (apt-get update && apt-get install $package -y --force-yes)"
+}
+
+## -----------------------------------------------------------------------------
+
+proc create_proxy_wrap {} {
+   global HTTP_PROXY HTTPS_PROXY
+   do "cat << ---END > /usr/bin/proxywrap.sh; chmod 0755 /usr/bin/proxywrap.sh
+#!/bin/bash
+env http_proxy=$HTTP_PROXY \
+    HTTP_PROXY=$HTTP_PROXY \
+   https_proxy=$HTTPS_PROXY \
+      no_proxy=localhost,127.0.0.1 \
+    \\\${0}.real \"\\\$@\"
+---END"
+}
+
+## -----------------------------------------------------------------------------
+
+proc install_proxy_wrap {binary} {
+   create_proxy_wrap
+   do "bpath=\$(which $binary)"
+   do {[ ! -r ${bpath}.real ] && [ -r $bpath ] && (
+       mv $bpath ${bpath}.real && ln -s /usr/bin/proxywrap.sh $bpath)}
+}
+
+## -----------------------------------------------------------------------------
+
+proc fix_proxy_settings {http_proxy https_proxy} {
+    ## do nothing if proxy is not defined
+    if {$http_proxy == ""} {return}
+
+    ## Configure bash to always source the proxy settings file
+    ## (even for non-interactive shells)
+    do {sed -i  '/proxy_inits.sh/d' /etc/bash.bashrc}
+    do {sed -i  '1i [ -r /etc/profile.d/proxy_inits.sh ] && source /etc/profile.d/proxy_inits.sh' /etc/bash.bashrc}
+
+    ## --- Use /etc/profile.d to create individual proxy configs (per user)
+    ## --- 1) gem:        .gemrc (/etc/gemrc does not work for proxy settings...)
+    ## --- 1) curl:       .curlrc
+    ## --- 2) python pip: .pip/pip.conf
+
+    ## figure out the host ip
+    do {host_ip=$(ip route get 8.8.8.8 | sed -n '/ src / s/.*src *\([0-9.]*\).*$/\1/p')}
+
+    do "echo  'http_proxy=$http_proxy'  >    /etc/profile.d/proxy_inits.sh"
+    do "echo 'https_proxy=$https_proxy' >>   /etc/profile.d/proxy_inits.sh"
+    do {echo "host_ip=$host_ip" >>  /etc/profile.d/proxy_inits.sh}
+    do {chmod +x                    /etc/profile.d/proxy_inits.sh}
+    do {cat << "---END"         >>  /etc/profile.d/proxy_inits.sh
+[ $(id -u) = 0 ] && (
+   echo "Acquire::http::Proxy  \"$http_proxy\";"  >   /etc/apt/apt.conf
+   echo "Acquire::https::Proxy \"$https_proxy\";" >>  /etc/apt/apt.conf
+   echo "Acquire::ftp::Proxy   \"$http_proxy\";"  >>  /etc/apt/apt.conf
+)
+
+## wget
+[ -w $HOME ] && cat << --- > $HOME/.wgetrc
+https_proxy = $https_proxy
+http_proxy  = $http_proxy
+ftp_proxy   = $http_proxy
+no_proxy    = localhost,127.0.0.1,$host_ip
+use_proxy   = on
+---
+
+## git
+[ -w $HOME ] && cat << --- > $HOME/.gitconfig
+[http]
+proxy = $http_proxy
+[url "https://github.com/"]
+insteadOf = git://github.com/
+[url "https://github.com/"]
+insteadOf = git@github.com:
+---
+
+## ruby gem
+[ -w $HOME ] && cat << --- > $HOME/.gemrc
+gem: --http-proxy=$http_proxy --no-ri --no-rdoc
+:sources:
+- http://rubygems.org
+---
+
+## curl
+[ -w $HOME ] && cat << --- > $HOME/.curlrc
+proxy=$http_proxy
+noproxy="localhost,127.0.0.1,$host_ip"
+---
+
+## python pip
+[ -w $HOME ] && mkdir -p $HOME/.pip && cat << --- > $HOME/.pip/pip.conf
+[global]
+proxy=$http_proxy
+---
+
+unset http_proxy https_proxy host_ip
+---END}
+
+   do {bash /etc/profile.d/proxy_inits.sh}
+   do {cp $HOME/.gitconfig /etc/gitconfig}
+   do {cp $HOME/.wgetrc    /etc/wgetrc}
+   do {cp $HOME/.curlrc    /etc/curlrc}
+   do {cp $HOME/.gemrc     /etc/gemrc}
+
+}
+
+## -----------------------------------------------------------------------------
+## common initialiation setting for all scripts
+## in this section we will also login to the remote server
+
+set target [ get_set_target $argv ]
+set cfile  [ glob -nocomplain \
+                  configs/$target:*.cfg configs/$target.cfg \
+                  configs/*:$target.cfg configs/*:$target:*.cfg ]
+if {$cfile != ""} {
+   puts "---> Working on target \"$target\" ($cfile)"
+   source "$cfile"
+} else {
+   puts "Missing configuration file for target \"$target\"; exiting"
+   exit 1
+}
+
+## ----- if HTTP_PROXY or HTTPS_PROXY, then create a prepend command
+if {! [info exists HTTPS_PROXY]} {set HTTPS_PROXY "$HTTP_PROXY"}
+if {$HTTP_PROXY != ""} {
+   set PROXY_PRE "env http_proxy=$HTTP_PROXY  \
+                      HTTP_PROXY=$HTTP_PROXY  \
+                     https_proxy=$HTTPS_PROXY "
+} else {
+   set PROXY_PRE ""
+}
+
+if [string match "*/scripts-remote" [pwd]] {
+   spawn /bin/bash
+} else {
+   spawn /usr/bin/ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no $target
+   expect "ast login"
+}
+do "export PS1='$cprompt'"
+do {unset DISPLAY XDG_SESSION_COOKIE}
+
+## switch to stack user if available (devstack installed)
+## --- source openstack credentials (if available)
+if {![info exists noStack] || !$noStack} then {
+   do {id stack >/dev/null 2>&1 && exec su - stack} "@|$cprompt"
+   do "export PS1='$cprompt'"
+}
+
+## --- source openstack credentials (if available)
+if {![info exists noInit] || !$noInit} then {
+   set InitFile "\$HOME/inits/openrc-$PROJECT.rc"
+   do "\[ -r $InitFile \] && source $InitFile"
+}
+
+## -----------------------------------------------------------------------------
+
+proc build_deployment_config {manifest} {
+   global PROJECT CF_SYSTEM CF_CORE_IP CF_WORKERS CF_WORKER_REUSE CF_ROOT_DNS
+   global TEMPLATE_DEPLOYMENT
+   global FIXED_RANGE_ID FIXED_RANGE
+   global ctrlD ESC
+
+   regsub {\.[0-9]*(/[0-9]*)?$} $FIXED_RANGE "" FIXED_RANGE_BASE
+
+   do {bosh status > /tmp/bosh_status}
+   do {bosh_uuid=$(awk '$1=="UUID"{print $2}'     /tmp/bosh_status)}
+
+   set template_file "templates/$TEMPLATE_DEPLOYMENT.yml"
+   if {![ file exists "$template_file" ]} {
+      puts "the template file \"$template_file\" does not exist"
+      puts "exiting..."
+      exit 1
+   }
+
+   #puts "manifest: $manifest"
+   #interact
+
+   #set template [read [open "$template_file" r]]
+   #send "vi $manifest\ni"
+   #send "plompen kommer\n"
+   #do "${ESC}:wq"
+
+
+   ## Ensure that the manifest directory exists
+   do "mkdir -p \$(dirname $manifest)"
+
+
+   send_user "Uploading configuration file. Please wait...\n"
+   log_user 0
+   set send_slow {10 .002}
+   set template [read [open "$template_file" r]]
+   send "cat > $manifest\n"
+   send -s -- "$template\n"
+   do "$ctrlD$ctrlD"
+   log_user 1
+
+   set DEPLOYMENT_NAME "$CF_SYSTEM-core"
+
+   do "sed -i -e  's|%CF_SYSTEM%|$CF_SYSTEM|g' \
+              -e  's|%DEPLOYMENT_NAME%|$DEPLOYMENT_NAME|g' \
+              -e  's|%CF_WORKERS%|$CF_WORKERS|g' \
+              -e  's|%CF_WORKER_REUSE%|$CF_WORKER_REUSE|g' \
+              -e  's|%FLAVOR_COMPILE%|$PROJECT.compile|g' \
+              -e  's|%FLAVOR_CORE%|$PROJECT.core|g' \
+              -e  's|%CF_CORE_IP%|$CF_CORE_IP|g' \
+              -e  's|%CF_ROOT_DNS%|$CF_ROOT_DNS|g' \
+              -e  's|%NET-ID%|$FIXED_RANGE_ID|g' \
+              -e  's|%FIXED_RANGE%|$FIXED_RANGE|g' \
+              -e  's|%FIXED_RANGE_BASE%|$FIXED_RANGE_BASE|g' \
+              -e \"s|%DIRECTOR_UUID%|\$bosh_uuid|g\" \
+              $manifest"
+}
+
+
+## -----------------------------------------------------------------------------
+

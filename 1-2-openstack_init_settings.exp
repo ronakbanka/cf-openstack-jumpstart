@@ -1,0 +1,114 @@
+#!/usr/bin/expect
+
+## Copyright (c) 2013 Farestam Consulting AB
+## Created by Stefan Farestam <stefan@farestam.com>
+
+## -------- source common functions and local configuration settings
+source {common_functions.exp}
+
+## --- initialize all flavors
+foreach {name settings} [array get FLAVORS] {
+   set flavor $PROJECT.$name
+   do "nova flavor-show $flavor >/dev/null 2>&1 &&
+       nova-manage flavor delete --name=$flavor"
+   do "nova flavor-create $flavor auto $settings"
+}
+
+
+## --- adjust nova quotas
+do {nova-manage project quota $OS_ID_TENANT --key=instances       --value=-1}
+do {nova-manage project quota $OS_ID_TENANT --key=floating_ips    --value=-1}
+do {nova-manage project quota $OS_ID_TENANT --key=cores           --value=-1}
+do {nova-manage project quota $OS_ID_TENANT --key=security_groups --value=-1}
+do {nova-manage project quota $OS_ID_TENANT --key=security_group_rules --value=-1}
+
+
+## --- add floating ips (if not done already)
+do {fips=$(nova floating-ip-bulk-list | awk '$3=="|"{print $4}')}
+foreach {ipfloating} [range $IPS_FLOATING] {
+    do "echo \$fips | fgrep -q $ipfloating && nova floating-ip-bulk-delete $ipfloating"
+    do "nova floating-ip-bulk-create $ipfloating"
+}
+
+
+## --- remove the core ip from the ip-pool
+do "nova floating-ip-bulk-delete $CF_CORE_IP"
+
+
+## --- configure firewall access rules
+
+#set OS_AUTH_URL     [capture_var OS_AUTH_URL    ]/tokens
+
+## --- fix potential bug in keystone endpoint for glance: delete and recreate
+## --- https://groups.google.com/a/cloudfoundry.org/forum/?fromgroups=#!msg/bosh-users/bH1xb1b1znE/ANTbwW7ACHEJ
+
+do {glance_service_id=$(keystone service-list | awk '$4=="glance"{print$2}')}
+do {keystone_endpoint_id=$(keystone endpoint-list | awk '$12=="'$glance_service_id'"{print $2}')}
+do {service_host=$(echo $OS_AUTH_URL | tr -s :/ : | awk -F: '{print $2}')}
+do {keystone endpoint-delete $keystone_endpoint_id}
+do {keystone endpoint-create \
+            --region RegionOne \
+            --service_id  $glance_service_id\
+            --publicurl "http://$service_host:9292/v1.0" \
+            --adminurl "http://$service_host:9292/v1.0" \
+            --internalurl "http://$service_host:9292/v1.0"}
+
+
+
+## --- create ssh certificates (if required)
+do {if ! [ -d .ssh ]; then mkdir .ssh; chmod 0700 .ssh; fi}
+do {if ! [ -r .ssh/id_rsa.pub ]; then ssh-keygen -q -P '' -f .ssh/id_rsa; fi}
+
+## --- add ssh keypair
+do "nova keypair-delete $PROJECT; nova keypair-add --pub_key .ssh/id_rsa.pub $PROJECT"
+
+## --- configure firewall access rules
+do {nova secgroup-add-rule  default icmp   -1    -1  0.0.0.0/0 2>/dev/null} ;## allow ping
+do {nova secgroup-add-rule  default tcp    22    22  0.0.0.0/0 2>/dev/null} ;## allow ssh
+do {nova secgroup-add-rule  default tcp  6868  6868  0.0.0.0/0 2>/dev/null} ;## bosh
+do {nova secgroup-add-rule  default tcp 25555 25555  0.0.0.0/0 2>/dev/null} ;## bosh
+do {nova secgroup-add-rule  default tcp 25889 25889  0.0.0.0/0 2>/dev/null} ;## bosh
+
+
+## --- Prepare for image upload
+
+## determine architecture
+do {[ $(arch) == "x86_64" ] && uarch=amd64}
+
+## create images directory
+set images_cache "/opt/cache/cloud_images"
+do "sudo mkdir -p $images_cache"
+do "sudo chown -R \$(id -u).\$(id -g) /opt/cache"
+
+ensure_installed cloud-publish-tarball cloud-utils
+
+
+proc install_ubuntu_image {ubuver uburef} {
+   global images_cache
+
+   set name       "ubuntu-$ubuver-server-cloudimg-\$uarch-disk1.img"
+   set ubusrc     "http://uec-images.ubuntu.com/releases/$uburef/$name"
+   set ubucached  "$images_cache/$name"
+
+   ## ... download image if not in cache
+   do "\[ ! -r $ubucached \] && (cd $images_cache;  curl $ubusrc -O)"
+
+   ## ... add image
+   do "nova image-show Ubuntu_$ubuver >/dev/null 2>&1 || \
+       glance add name=Ubuntu_$ubuver disk_format=qcow2 container_format=bare \
+       is_public=true < $ubucached"
+}
+
+#install_ubuntu_image 10.04 {10.04/release-20130124}
+#install_ubuntu_image 11.04 {natty/release-20121028}
+#install_ubuntu_image 11.10 {oneiric/release-20130309}
+#install_ubuntu_image 12.04 {12.04.2/release-20130325}
+install_ubuntu_image 12.10 {quantal/release-20130206}
+#install_ubuntu_image 13.04 {13.04/release-20130423}
+
+
+send "exit\r"
+puts "\r"
+
+exit 0
+

@@ -1,0 +1,31 @@
+#!/usr/bin/expect
+
+## Copyright (c) 2013 Farestam Consulting AB
+## Created by Stefan Farestam <stefan@farestam.com>
+
+## -------- source common functions and local configuration settings
+source {common_functions.exp}
+
+## --- find out the ip of the bootstrap vm
+do "bootstrap_ip=\$(os_get_vm_ip_by_name $PROJECT.bootstrap)"
+
+## --- login to the bootstrap vm
+do {ssh_notrace ubuntu@$bootstrap_ip} {ubuntu@}
+
+## --- switch to the root user
+do {sudo su -} {root@}
+do "export PS1='$cprompt'"
+
+## --- fix the system wide proxy settings
+fix_proxy_settings $HTTP_PROXY $HTTPS_PROXY
+
+## --- exit from root and relogin to ensure that new proxy settings are active
+do {exit} {ubuntu@}
+do {exit}
+send "exit\r"
+puts "\r"
+exit 0
+
+## ==========================================================================
+
+

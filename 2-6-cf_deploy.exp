@@ -1,0 +1,75 @@
+#!/usr/bin/expect
+
+## Copyright (c) 2013 Farestam Consulting AB
+## Created by Stefan Farestam <stefan@farestam.com>
+
+## -------- source common functions and local configuration settings
+source {common_functions.exp}
+
+## --- cleanup old compile instances (if any)
+do "os_delete_instances_by_flavor $PROJECT.compile"
+
+## find the network id
+do "FIXED_RANGE_ID=\$(nova net-list | awk '\$6==\"$FIXED_RANGE\" {print \$2}')"
+set FIXED_RANGE_ID  "[capture_var FIXED_RANGE_ID ]"
+
+## --- add core ip to openstack ip pool
+## we don't want to this earlier since ip could accidentally be assigned to the
+## bootstrap or inception vm
+
+do "nova floating-ip-bulk-create --pool coreip-$CF_SYSTEM $CF_CORE_IP"
+do "nova floating-ip-create coreip-$CF_SYSTEM"
+
+## --- configure firewall access rules
+set SECGROUP "cloudfoundry-$CF_SYSTEM"
+do "nova secgroup-list | fgrep -q $SECGROUP || (
+       nova secgroup-create $SECGROUP $SECGROUP
+       nova secgroup-add-rule  $SECGROUP tcp      22      22  0.0.0.0/0
+       nova secgroup-add-rule  $SECGROUP tcp      80      80  0.0.0.0/0
+       nova secgroup-add-rule  $SECGROUP tcp     433     433  0.0.0.0/0
+       nova secgroup-add-rule  $SECGROUP tcp    2544    2544  0.0.0.0/0
+       nova secgroup-add-rule  $SECGROUP tcp    3456    3456  0.0.0.0/0
+       nova secgroup-add-rule  $SECGROUP tcp    4222    4222  0.0.0.0/0
+       nova secgroup-add-rule  $SECGROUP tcp    8080    8080  0.0.0.0/0
+       nova secgroup-add-rule  $SECGROUP tcp    8100    8100  0.0.0.0/0
+       )"
+
+## --- find out the ip of the bootstrap vm
+do "bootstrap_ip=\$(os_get_vm_ip_by_name $PROJECT.bootstrap)"
+
+## --- login to the bootstrap vm
+do {ssh_notrace ubuntu@$bootstrap_ip} {ubuntu@}
+
+## --- switch to the root user
+do {sudo su -} {root@}
+do "export PS1='$cprompt'"
+
+## --- add no_proxy for openstack and microbosh server to proxy settings
+if {"$PROXY_PRE" != ""} {
+   do {ip_microbosh=$(awk '$1=="ip:"{print $2}' .microbosh/settings.yml)}
+   do {ip_openstack=$(sed -n '/openstack_auth_url:/s|.*http://\([^:/]*\).*|\1|p' \
+       .microbosh/settings.yml)}
+
+   set PROXY_PRE "$PROXY_PRE no_proxy=\$ip_openstack,\$ip_microbosh,127.0.0.1"
+}
+
+set CONFIG_FILE "/var/vcap/store/systems/$CF_SYSTEM/deployments/$CF_SYSTEM-core.yml"
+build_deployment_config $CONFIG_FILE
+do "bosh deployment     $CONFIG_FILE"
+
+do "echo yes | $PROXY_PRE bosh deploy"
+interact
+
+do {bosh cf deploy}
+
+## --- interact until <ctrl-A><return>
+interact -echo "\001\r" return
+
+## --- exit politely
+do {exit} {ubuntu@}
+do {exit}
+send {exit\r}
+puts "\r"
+exit 0
+
+

@@ -1,0 +1,44 @@
+#!/usr/bin/expect
+
+## Copyright (c) 2013 Farestam Consulting AB
+## Created by Stefan Farestam <stefan@farestam.com>
+
+## -------- source common functions and local configuration settings
+source {common_functions.exp}
+
+## --- cleanup old project vms
+foreach {name settings} [array get FLAVORS] {
+   do "os_delete_instances_by_flavor $PROJECT.$name"
+}
+
+## --- delete old bosh images owned by the project
+do {bosh_ids=$(nova image-list | awk '$4 ~ /^BOSH-/ {print $2}')}
+do {for id in $bosh_ids; do
+       img_owner=$(glance image-show $id | awk '$2=="owner"{print $4}')
+       [ $img_owner == $OS_ID_TENANT ] && nova image-delete $id
+    done}
+
+## --- delete snapshots
+do {ids=$(nova volume-snapshot-list | awk '$6 == "available" {print $2}')}
+do {[ "$ids" != "" ] && echo $ids | xargs -n 1 nova volume-snapshot-delete}
+
+## --- delete "hanging" volumes (not attached to any vms)
+do {ids=$(nova volume-list | awk '$4 == "available" {print $2}')}
+do {[ "$ids" != "" ] && echo $ids | xargs -n 1 nova volume-delete}
+
+## --- delete keypairs and security groups to start fresh
+do "(nova  keypair-delete $PROJECT-bosh 2>/dev/null;
+     nova secgroup-delete $PROJECT-microbosh 2>/dev/null)"
+
+## --- remove unallocated floating ips so that we don't run out of them...
+do {for ip in $(nova floating-ip-list | awk '$4=="None" {print $2}'); do
+    nova floating-ip-delete $ip; done}
+
+## --- boot boostrap vm (<name> <flavor> <image> <key>)
+do "os_boot_instance $PROJECT.bootstrap $PROJECT.bootstrap \
+                     ${Ubuver_bootstrap} $PROJECT"
+
+send "exit\r"
+puts "\r"
+exit 0
+

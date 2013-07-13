@@ -1,0 +1,157 @@
+#!/usr/bin/expect
+
+## Copyright (c) 2013 Farestam Consulting AB
+## Created by Stefan Farestam <stefan@farestam.com>
+
+## -------- source common functions and local configuration settings
+set noInit true
+source {common_functions.exp}
+
+## --- if running in devstack - source openstack credentials
+do {[ $(id -un) = "stack" ] && source devstack/openrc admin}
+do {[ $(id -un) = "stack" ] && source devstack/eucarc}
+
+set InitDir  "\$HOME/inits"
+set InitFile "$InitDir/openrc-$PROJECT.rc"
+
+
+do "\[ -r $InitFile \] && rm $InitFile"
+do "mkdir -p $InitDir; cd $InitDir"
+
+## -------- create tenant
+## ... first get ids for the "admin" user and the "admin" role
+do {OS_ROLE_ADMIN_ID=$(keystone role-list | awk '$4=="admin" {print $2}')}
+do {OS_USER_ADMIN_ID=$(keystone user-list | awk '$4=="admin" {print $2}')}
+
+
+## ... if the tenant doesn't exist, then create it
+do "keystone tenant-get $PROJECT 2>/dev/null 1>&2 || \
+    keystone tenant-create --name $PROJECT --enabled true"
+
+## ... get the tenant/project id
+do "OS_PROJECT_ID=\$(keystone tenant-list | awk '\$4==\"$PROJECT\" {print \$2}')"
+
+## ... set environment variables
+do {unset SERVICE_ENDPOINT SERVICE_TOKEN}
+
+## ... add the admin user to the project
+
+do {keystone user-role-list \
+       --tenant $OS_PROJECT_ID \
+       --user   $OS_USER_ADMIN_ID 2>&1 |\
+    fgrep -q $OS_ROLE_ADMIN_ID || \
+    keystone user-role-add --user    $OS_USER_ADMIN_ID \
+                           --role    $OS_ROLE_ADMIN_ID \
+                           --tenant  $OS_PROJECT_ID}
+
+
+## -------- setup EC2 credentials
+## ... create certificates (if missing)
+do {[ ! -r cert-cacert.pem ] && nova x509-get-root-cert cert-cacert.pem}
+do {[ ! -r cert-cert.pem   ] && nova x509-create-cert   cert-pk.pem cert-cert.pem}
+
+
+
+do "cat << ---END > $InitFile
+unset SERVICE_ENDPOINT SERVICE_TOKEN
+
+# COMMON OPENSTACK ENVS
+export OS_USERNAME=\$OS_USERNAME
+export OS_PASSWORD=\$OS_PASSWORD
+export OS_TENANT_NAME=$PROJECT
+export OS_ID_TENANT=\$OS_PROJECT_ID
+export OS_AUTH_URL=\$(keystone catalog --service identity | awk '\$2==\"publicURL\" {print \$4}')
+
+export NOVA_CERT=$InitDir/cert-cacert.pem
+
+# EUCA2OOLs ENV VARIABLES
+export EC2_ACCESS_KEY=\$(keystone ec2-credentials-list --user-id \$OS_USER_ADMIN_ID |\
+                        awk '\$2==\"admin\" && NR < 5 {print \$4}')
+export EC2_CERT=$InitDir/cert-cert.pem
+export EC2_PRIVATE_KEY=$InitDir/cert-pk.pem
+export EC2_SECRET_KEY=\$(keystone ec2-credentials-list --user-id \$OS_USER_ADMIN_ID |\
+                        awk '\$2==\"admin\" && NR < 5 {print \$6}')
+export EC2_URL=\$(keystone catalog --service ec2 | awk '\$2==\"publicURL\" {print \$4}')
+export EC2_USER_ID=42
+
+export EUCALYPTUS_CERT=$InitDir/cert-cacert.pem
+
+export S3_URL=http://\$(ip route get 8.8.8.8 | awk '/src/{print \$NF}'):3333/
+#export S3_URL=\$(keystone catalog --service s3 | awk '\$2==\"publicURL\" {print \$4}')
+---END"
+
+## --- Define a set of openstack convenience functions
+send "cat << \"---END\" >> $InitDir/openrc-$PROJECT.rc\n"
+do {
+
+## -----------------------------------------------------------------------------
+
+function os_delete_instances_by_flavor {
+   flavor="$1"
+
+   vms=$(nova list | awk 'NR>2 {print $2}')
+   for vm in $vms; do
+      vmflavor=$(nova show $vm | awk 'NR>2 && $2=="flavor" {print $4}')
+      if [ "$vmflavor" == "$flavor" ]; then
+         nova delete $vm
+         while nova show $vm 2>&1 | fgrep -q status; do
+            echo deleting $vm; sleep 1;
+         done
+      fi
+   done
+}
+
+## -----------------------------------------------------------------------------
+
+function os_get_vm_ip_by_name {
+   name="$1"
+   nova show "$name" 2>/dev/null | awk '/network *\|/{print $5}' | tr -d ,
+}
+
+## -----------------------------------------------------------------------------
+
+function os_get_vm_ip_by_flavor {
+   name="$1"
+   nova show $name 2>/dev/null | awk '/private network/{print $5}'
+}
+
+## -----------------------------------------------------------------------------
+
+function os_boot_instance {
+   name="$1"; flavor="$2"; image="$3"; key="$4"
+   nova boot --flavor "$flavor" --image "$image" --key_name "$key" "$name"
+   while nova show "$name" | fgrep status | fgrep -v ACTIVE; do sleep 1; done
+
+   sleep 2
+   ## --- find out the ip of the bootstrap vm
+   vm_ip=$(os_get_vm_ip_by_name $name)
+
+   while ! ping -c 1 -t 1 $vm_ip >/dev/null 2>&1; do
+      echo "Waiting for bootup"
+      sleep 1
+   done
+   echo "waiting for bootup to finalize"; sleep 10
+}
+
+## -----------------------------------------------------------------------------
+## Define an ssh function that doesn't leave any entry in the known_hosts
+## file and disables strict host checking.
+
+function ssh_notrace {
+   rhost="$1"; command="$2"
+   /usr/bin/ssh \
+      -o UserKnownHostsFile=/dev/null \
+      -o StrictHostKeyChecking=no \
+      -o LogLevel=quiet \
+      $rhost $command
+}
+
+## -----------------------------------------------------------------------------
+
+---END}
+
+send "exit\r"
+puts "\r"
+
+exit 0
+

@@ -1,0 +1,15 @@
+#!/usr/bin/expect
+
+## Copyright (c) 2013 Farestam Consulting AB
+## Created by Stefan Farestam <stefan@farestam.com>
+
+## -------- source common functions and local configuration settings
+source {common_functions.exp}
+
+## --- interact until <ctrl-A><return>
+interact -echo "\001\r" return
+
+## --- exit politely
+send {exit\r}
+puts "\r"
+exit 0

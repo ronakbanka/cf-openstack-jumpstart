@@ -1,0 +1,35 @@
+#!/usr/bin/expect
+
+## Copyright (c) 2013 Farestam Consulting AB
+## Created by Stefan Farestam <stefan@farestam.com>
+
+## -------- source common functions and local configuration settings
+source {common_functions.exp}
+
+## --- Fix the locale settings (these are typically botched up on new Ubuntu installs)
+do {sed -i '/^LANG=/d'         /etc/default/locale}
+do {sed -i '/^LC_ALL=/d'       /etc/default/locale}
+do {echo   LANG=en_US.UTF-8 >> /etc/default/locale}
+do {echo LC_ALL=en_US.UTF-8 >> /etc/default/locale}
+
+## --- Exit ssh session and relogin to ensure locale settings are updated
+send "exit\r"
+spawn /usr/bin/ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no $target
+expect "ast login"
+do "export PS1='$cprompt'"
+
+## --- Perform a general system update (but only once)
+do {[ -r /root/.system_update_done ] || (
+   touch /root/.system_update_done
+   apt-get update
+   apt-get dist-upgrade -y --force-yes
+   )}
+
+send "\[ -r /var/run/reboot-required \] && echo REBOOT || echo NOPE\r"
+expect {
+   "\nREBOOT"  {puts "Reboot required; perform manually\r"; send "\r"; interact}
+   "\nNOPE"
+}
+
+send "exit\r"
+

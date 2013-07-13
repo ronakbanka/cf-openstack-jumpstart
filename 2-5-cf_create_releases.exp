@@ -1,0 +1,128 @@
+#!/usr/bin/expect
+
+## Copyright (c) 2013 Farestam Consulting AB
+## Created by Stefan Farestam <stefan@farestam.com>
+
+## -------- source common functions and local configuration settings
+source {common_functions.exp}
+
+## --- cleanup old cf.inception instances (if any)
+do "os_delete_instances_by_flavor $PROJECT.core"
+do "os_delete_instances_by_flavor $PROJECT.compile"
+
+## --- find out the ip of the bootstrap vm
+do "bootstrap_ip=\$(os_get_vm_ip_by_name $PROJECT.bootstrap)"
+
+### --- sync cache to bootstrap
+#set cache "/opt/cache/vcap_store"
+#do "rsync -av --delete \
+#   -e \"ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no\" \
+#   $cache/ ubuntu@\${bootstrap_ip}:/var/vcap/store/"
+
+## --- login to the bootstrap vm
+do {ssh_notrace ubuntu@$bootstrap_ip} {ubuntu@}
+
+## --- switch to the root user
+do {sudo su -} {root@}
+do "export PS1='$cprompt'"
+
+## ---------------------------------------------------------------------
+## ----- add no_proxy for openstack and microbosh server to proxy settings
+
+if {"$PROXY_PRE" != ""} {
+   do {ip_microbosh=$(awk '$1=="ip:"{print $2}' .microbosh/settings.yml)}
+   do {ip_openstack=$(sed -n '/openstack_auth_url:/s|.*http://\([^:/]*\).*|\1|p' \
+       .microbosh/settings.yml)}
+
+   set PROXY_PRE "$PROXY_PRE no_proxy=\$ip_openstack,\$ip_microbosh,127.0.0.1"
+}
+
+## ---------------------------------------------------------------------
+## ----- Prepare for fetching releases
+
+## ensure that only https access to github is used
+do {git config --replace-all --global url.https://github.com/.insteadOf git://github.com/}
+do {git config --add         --global url.https://github.com/.insteadOf git@github.com:}
+
+
+## ---------------------------------------------------------------------
+## ----- create and upload the core cf release
+
+do {branch=release-candidate}
+do {command cd /var/vcap/store/releases}
+do {[ ! -d cf-release ] && \
+    git clone https://github.com/cloudfoundry/cf-release.git \
+    --branch $branch}
+do {command cd /var/vcap/store/releases/cf-release}
+
+## update the repo
+do {git checkout $branch && git reset --hard && git clean -ffd}
+do {./update}
+
+do "echo cf-release | $PROXY_PRE bosh create release --force"
+do {echo yes | bosh upload release}
+
+## make sure that the upload is completed before proceeding
+do {while ! (bosh tasks |& fgrep -q 'No running'); do echo "Waiting for task...";done}
+
+
+## ---------------------------------------------------------------------
+## ----- create and upload the cf-services release
+
+do {branch=master}
+do {command cd /var/vcap/store/releases}
+do {[ ! -d cf-services-release ] && \
+    git clone https://github.com/cloudfoundry/cf-services-release.git \
+    --branch $branch}
+do {command cd /var/vcap/store/releases/cf-services-release}
+
+## update the repo
+do {git checkout $branch && git reset --hard && git clean -ffd}
+do {./update}
+
+do "echo cf-services | $PROXY_PRE bosh create release --force"
+do {echo yes | bosh upload release}
+
+## make sure that the upload is completed before proceeding
+do {while ! (bosh tasks |& fgrep -q 'No running'); do echo "Waiting for task...";done}
+
+
+## ---------------------------------------------------------------------
+## ----- create and upload the cf-services-contrib release
+
+do {branch=master}
+do {command cd /var/vcap/store/releases}
+do {[ ! -d cf-services-contrib-release ] && \
+    git clone https://github.com/cloudfoundry/cf-services-contrib-release.git \
+    --branch $branch}
+do {command cd /var/vcap/store/releases/cf-services-contrib-release}
+
+## update the repo
+do {git checkout $branch && git reset --hard && git clean -ffd}
+do {./update}
+
+do "echo cf-services-contrib | $PROXY_PRE bosh create release --force"
+do {echo yes | bosh upload release}
+
+## make sure that the upload is completed before proceeding
+do {while ! (bosh tasks |& fgrep -q 'No running'); do echo "Waiting for task...";done}
+
+## ---------------------------------------------------------------------
+## ----- done - exit!
+
+## --- exit to openstack
+do {exit} {ubuntu@}
+do {exit}
+
+## --- sync cache back from bootstrap
+do {rsync -av --delete\
+   -e "ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no" \
+   ubuntu@${bootstrap_ip}:/var/vcap/store/ /opt/cache/vcap_store/}
+
+
+send {exit\r}
+puts "\r"
+exit 0
+
+
+

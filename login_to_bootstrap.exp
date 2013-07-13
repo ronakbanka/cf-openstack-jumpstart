@@ -1,0 +1,30 @@
+#!/usr/bin/expect
+
+## Copyright (c) 2013 Farestam Consulting AB
+## Created by Stefan Farestam <stefan@farestam.com>
+
+## -------- source common functions and local configuration settings
+source {common_functions.exp}
+
+## --- find out the ip of the bootstrap vm
+do "bootstrap_ip=\$(os_get_vm_ip_by_name $PROJECT.bootstrap)"
+
+## --- login to the bootstrap vm
+do {/usr/bin/ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no ubuntu@$bootstrap_ip} {ubuntu@}
+
+## --- switch to the root user
+do {sudo su -} {root@}
+do "export PS1='$cprompt'"
+
+
+## --- interact until <ctrl-A><return>
+interact -echo "\001\r" return
+
+## --- exit politely
+do {exit} {ubuntu@}
+do {exit}
+send {exit\r}
+puts "\r"
+exit 0
+
+
