@@ -122,6 +122,36 @@ Downloads, prepares and uploads *cf-release*, *cf-services* and *cf-services-con
 * **2-6-cf_deploy**
 Deploys Cloud Foundry using the templated configuration file in the templates directory
 
+## Issues
+
+If you run into this problem during the final compile phase:
+```
+Compiling packages
+  postgresql92/0.1-dev (00:03:00)
+  postgresql91/0.1-dev (00:03:53)
+  mysql55/0.1-dev (00:04:05)
+  postgresql/0.1-dev (00:04:07)
+  mysql/0.1-dev: unknown agent_task_id (00:01:09)
+  mysqlclient/0.1-dev (00:00:03)
+  libyaml/0.1-dev (00:00:32)
+  sqlite/0.1-dev (00:01:03)
+Error                   8/42 00:05:09
+
+Error 450001: unknown agent_task_id
+
+Task 5 error
+
+For a more detailed error report, run: bosh task 5 --debug
+===>
+````
+
+Then try to just relaunch the compile by redoing the last command (you will have an interactive prompt after the compile phase):
+
+```
+===> bosh deploy
+```
+
+Note that **bosh deploy** might be prefixed by proxy environment settings. As an alternative, you can just exit the script (type **exit** multiple times) and relaunch the script.
 
 ## Script execution timings
 
