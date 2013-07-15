@@ -60,7 +60,6 @@ If these scripts complete without problems then you most likely have a working O
    * switch to the project view: Click on Project -> Current Project -> bigserver
    * create and delete a volume: Click on Volumes -> Create Volume and create a sample small volume and check that it is being created without error
    * launch and delete an instance
-   --> any website link for this?
 
 
 Proceed with creating the bootstrap and microbosh VMs:
