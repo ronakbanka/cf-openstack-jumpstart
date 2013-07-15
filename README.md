@@ -168,7 +168,7 @@ Script    | Fast network / slow CPU | Slow network / fast CPU
 2-3       |  17                     |   13
 2-4       |  10                     |   15
 2-5       |  45                     |  125
-2-6       |  50                     |
+2-6       |  50                     |   37
 
 
 ## Utility scripts
