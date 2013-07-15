@@ -129,7 +129,7 @@ In case you wonder how long time this whole process takes, I have gathered some 
 
 
 Script    | Fast network / slow CPU | Slow network / fast CPU
-:-------: | ----------------------- | -----------------------
+:-------: | :---------------------: | :---------------------:
 0-3       |  15                     |  22
 1-1       |   1                     |   1
 1-2       |   2                     |   1
