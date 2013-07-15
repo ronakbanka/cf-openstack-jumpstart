@@ -46,12 +46,22 @@ Then install devstack (but **PLEASE** read the caveats below that the install pr
 0-3-devstack_install.exp qimigo
 ```
 
+
 Then configure openstack:
 
 ```
 1-1-openstack_init_project.exp
 1-2-openstack_init_settings.exp
 ```
+
+If these scripts complete without problems then you most likely have a working Openstack installation. Regardless, it's a really great idea to run some further verifications that everything works ok:
+
+   * login to UI
+   * switch to project
+   * create and delete a volume
+   * launch and delete an instance
+   --> any website link for this?
+
 
 Proceed with creating the bootstrap and microbosh VMs:
 
@@ -115,19 +125,20 @@ Deploys Cloud Foundry using the templated configuration file in the templates di
 
 ## Script execution timings
 
-The following table shows measured execution times for the scripts on a slow host with fast Internet access (100MB). Internet access speed will have a huge impact on the elapsed time, as will cpu.
+In case you wonder how long time this whole process takes, I have gathered some sample execution times (in minutes). The first host (server1) has low system resources but fast network access (100MB), while the second server has slow network access but a fast CPU.
 
-Script    | Elapsed time (minutes)
-:-------: | ----------------------
-0-3       |  15
-1-1       |   1
-1-2        |   2
-2-1       |   2
-2-2        |  14
-2-3        |  17
-2-4        |  10
-2-5        |  45
-2-6        |   50
+
+Script    | Fast network / slow CPU | Slow network / fast CPU
+:-------: | ----------------------- | -----------------------
+0-3       |  15                     |  22
+1-1       |   1                     |   1
+1-2       |   2                     |   1
+2-1       |   2                     |   2
+2-2       |  14                     |  25
+2-3       |  17                     |  15
+2-4       |  10                     |   8
+2-5       |  45                     |
+2-6       |  50                     |
 
 
 ## Utility scripts
