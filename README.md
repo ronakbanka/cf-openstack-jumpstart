@@ -15,7 +15,7 @@ The aim in creating these scripts has been to leverage other tools as much as po
 
 The following assumptions have been made:
 
-1. You have access to a Ubuntu server with password-less ssh root login configured, i.e. you should be able to execute `ssh server whoami` to access it and get the response `root` without entering any password. If you don't have this configured, then [this guide](http://osxdaily.com/2012/05/25/how-to-set-up-a-password-less-ssh-login/) will help you with the basic config and [this guide](http://nerderati.com/2011/03/simplify-your-life-with-an-ssh-config-file/) will show you how to assign a symbolic name to a user@host combo. This latter step is important as the config files are named using the name of the server (more on that below)
+1. You have access to a Ubuntu server with password-less ssh root login configured, i.e. you should be able to execute `ssh server whoami` to access it and get the response `root` without entering any password. If you don't have this configured, then [this guide](http://osxdaily.com/2012/05/25/how-to-set-up-a-password-less-ssh-login/) will help you with the basic configuration of ssh and [this guide](http://nerderati.com/2011/03/simplify-your-life-with-an-ssh-config-file/) will show you how to use a symbolic ssh name instead of user@host. This latter step is important as the config files are named using the name of the server (more on that below)
 
 2. The server is configured with Ubuntu 12.04 (other OS versions may work but are not recommended). In case you choose not to install devstack and use an existing Openstack Grizzly installation, then the basic requirement is that server is configured with Ubuntu (other OSes may work but have not been tested).
 
@@ -23,42 +23,42 @@ The following assumptions have been made:
 
 4. The server either has direct or proxied Internet access.
 
-5. The server has at least 8GB RAM. Much more is much, much better though ;-)
+5. I don't know the lower limit of memory requirements for the server, but suspect that it will be difficult to launch Cloud Foundry with much less than 16GB. More memory will definitely make your life easier ;-)
 
 ## Usage
 
 Before starting, spend a few minutes and read through the comments about the scripts in the section below.
 
-Then create a custom project configuration by cloning the **qimigo:qimigo.wan.cfg** file in the **configs directory** and adjust the settings. Most settings are hopefully self-evident, but the config file clearly needs a bit more commenting… In case you have a performant server, then you can definitely "up" the settings for the flavors.
+Then create a custom project configuration by cloning the **bigserver:bigserver.wan.cfg** file in the **configs directory** and adjust the settings. Most settings are hopefully self-evident, but the config file clearly needs a bit more commenting… In case you have a performant server, then you can definitely "up" the settings for the flavors.
 
-The odd naming of the configuration file reflects the fact that you can have multiple ssh names for the same config (in this case both *qimigo* and *qimigo.wan*). This is done in case you want to enable access to the server both from a local network and an external network, in which case you will have two different entries in your .ssh/config file. If you only have one entry called **server_name**, then the file can be renamed to **server_name.cfg**
+The odd naming of the configuration file reflects the fact that you can have multiple ssh names for the same config (in this case both *bigserver* and *bigserver.wan*). This is done in case you want to enable access to the server both from a local network and an external network, in which case you will have two different entries in your .ssh/config file. If you only have one entry called **server_name**, then the file can be renamed to **server_name.cfg**
 
-Once the configuration file has been created, go ahead and configure the server if it is freshly installed with Ubuntu (in this case the **qimigo:qimigo.wan.cfg** config file will be used):
+Once the configuration file has been created, go ahead and configure the server if it is freshly installed with Ubuntu (in this case the **bigserver:bigserver.wan.cfg** config file will be used):
 
 ```
-0-1-system_init_new.exp qimigo
-0-2-system_set_proxy.exp qimigo
+0-1-system_init_new.exp bigserver
+0-2-system_set_proxy.exp bigserver
 ```
 
 Then install devstack (but **PLEASE** read the caveats below that the install process is brutal and will delete any mysql installation):
 
 ```
-0-3-devstack_install.exp qimigo
+0-3-devstack_install.exp bigserver
 ```
 
 
 Then configure openstack:
 
 ```
-1-1-openstack_init_project.exp
-1-2-openstack_init_settings.exp
+1-1-openstack_init_project.exp bigserver
+1-2-openstack_init_settings.exp bigserver
 ```
 
 If these scripts complete without problems then you most likely have a working Openstack installation. Regardless, it's a really great idea to run some further verifications that everything works ok:
 
-   * login to UI
-   * switch to project
-   * create and delete a volume
+   * login to the openstack UI at http://bigserver (user: admin / password: admin)
+   * switch to the project view: Click on Project -> Current Project -> bigserver
+   * create and delete a volume: Click on Volumes -> Create Volume and create a sample small volume and check that it is being created without error
    * launch and delete an instance
    --> any website link for this?
 
@@ -66,17 +66,17 @@ If these scripts complete without problems then you most likely have a working O
 Proceed with creating the bootstrap and microbosh VMs:
 
 ```
-2-1-bosh_bootstrap_vm_create.exp
-2-2-bosh_bootstrap_vm_init.exp
-2-3-create_microbosh.exp
+2-1-bosh_bootstrap_vm_create.exp bigserver
+2-2-bosh_bootstrap_vm_init.exp bigserver
+2-3-create_microbosh.exp bigserver
 ```
 
 Finally configure and launch Cloud Foundry:
 
 ```
-2-4-update_bosh_stemcell.exp
-2-5-cf_create_releases.exp
-2-6-cf_deploy.exp
+2-4-update_bosh_stemcell.exp bigserver
+2-5-cf_create_releases.exp bigserver
+2-6-cf_deploy.exp bigserver
 ```
 
 
@@ -130,14 +130,14 @@ In case you wonder how long time this whole process takes, I have gathered some 
 
 Script    | Fast network / slow CPU | Slow network / fast CPU
 :-------: | :---------------------: | :---------------------:
-0-3       |  15                     |  22
-1-1       |   1                     |   1
-1-2       |   2                     |   1
-2-1       |   2                     |   2
-2-2       |  14                     |  25
-2-3       |  17                     |  15
-2-4       |  10                     |   8
-2-5       |  45                     |
+0-3       |  15                     |   22
+1-1       |   1                     |    1
+1-2       |   2                     |    1
+2-1       |   2                     |    2
+2-2       |  14                     |   25
+2-3       |  17                     |   13
+2-4       |  10                     |   15
+2-5       |  45                     |  125
 2-6       |  50                     |
 
 
