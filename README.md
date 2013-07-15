@@ -155,7 +155,7 @@ Note that **bosh deploy** might be prefixed by proxy environment settings. As an
 
 ## Script execution timings
 
-In case you wonder how long time this whole process takes, I have gathered some sample execution times (in minutes). The first host (server1) has low system resources but fast network access (100MB), while the second server has slow network access but a fast CPU.
+In case you wonder how long time this whole process takes, I have gathered some sample execution times (in minutes). The first server has low system resources but fast network access (100MB), while the second server has slow network access but a fast CPU. As can be seen, Internet access speed is a key factor when preparing the releases (step 2-5).
 
 
 Script    | Fast network / slow CPU | Slow network / fast CPU
