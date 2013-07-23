@@ -58,9 +58,6 @@ build_deployment_config $CONFIG_FILE
 do "bosh deployment     $CONFIG_FILE"
 
 do "echo yes | $PROXY_PRE bosh deploy"
-interact
-
-do {bosh cf deploy}
 
 ## --- interact until <ctrl-A><return>
 interact -echo "\001\r" return
