@@ -32,6 +32,7 @@ do {source /usr/local/rvm/scripts/rvm}
 
 do {gem install  guard-rspec fakeweb awesome_print --no-ri --no-rdoc}
 do {gem install  bosh-bootstrap -v 0.11.5 --no-ri --no-rdoc}
+do {gem install  bosh-cloudfoundry -v 0.7.0 --no-ri --no-rdoc}
 
 ## --- exit politely
 do {exit} {ubuntu@}
