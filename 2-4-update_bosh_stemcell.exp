@@ -54,7 +54,10 @@ if {$S_NEWER == "true" && $HTTP_PROXY != ""} {
 
    ## ensure that proxy settings are applied to the vcap user
    do {sudo -iu vcap bash /etc/profile.d/proxy_inits.sh}
-
+   ## install cloud-init and growroot to automatically allocate space according to flavor choosen
+   do {echo 'deb http://ppa.launchpad.net/smoser/ppa/ubuntu lucid main' >> /etc/apt/sources.list}
+   do {sudo apt-get update}
+   do {sudo apt-get install cloud-init lucid-growroot -y --force-yes}
    ## shut down the vm and wait until it is in the SHUTOFF state
    do {halt} {closed by remote host}
    do {while nova show boshtmp | grep status | grep -v SHUTOFF; do sleep 1; done}
